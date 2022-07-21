@@ -14,12 +14,13 @@ unsigned int dense_block_ind(const unsigned int nbcols,
     return nbcols * br * bs * bs + (r * nbcols + bc) * bs + c;
 }
 
-__kernel void todense_transp(unsigned int nbrows,
-                             unsigned int block_size,
-                             __global const int *sh_ptrs,
-                             __global const int *sh_inds,
-                             __global const double *sh_vals,
-                             __global double *rv_mat)
+__kernel void sp_to_dense(unsigned int nbrows,
+                          unsigned int nbcols,
+                          unsigned int block_size,
+                          __global const int *ptrs,
+                          __global const int *inds,
+                          __global const double *vals,
+                          __global double *rv_mat)
 {
     const unsigned int warpsize = 32;
     const unsigned int idx_t = get_local_id(0);
@@ -33,8 +34,8 @@ __kernel void todense_transp(unsigned int nbrows,
 
     if(lane < num_active_threads){
         while(br < nbrows){
-            for(unsigned int ptr = sh_ptrs[br]; ptr < sh_ptrs[br + 1]; ptr++){
-                rv_mat[dense_block_ind(nbrows, bs, sh_inds[ptr], br, c, r)] = sh_vals[ptr * bs * bs + r * bs + c];
+            for(unsigned int ptr = ptrs[br]; ptr < ptrs[br + 1]; ptr++){
+                rv_mat[dense_block_ind(nbcols, bs, br, inds[ptr], r, c)] = vals[ptr * bs * bs + r * bs + c];
             }
 
             br += num_rows_per_warp;
@@ -274,22 +275,21 @@ __kernel void larfb(unsigned int panel,
 __kernel void qr_decomposition(unsigned int nbrows,
                                unsigned int nbcols,
                                unsigned int block_size,
-                               __global const int *sh_ptrs,
-                               __global const int *sh_inds,
-                               __global const double *sh_vals,
+                               __global const int *ptrs,
+                               __global const int *inds,
+                               __global const double *vals,
                                __global double *rv_mat,
                                __local double *aux)
 {
-    __local double t_mat[9];
+    /* __local double t_mat[9]; */
 
-    todense_transp(nbrows, block_size, sh_ptrs, sh_inds, sh_vals, rv_mat);
+    sp_to_dense(nbrows, nbcols, block_size, ptrs, inds, vals, rv_mat);
 
-    /* for(unsigned int row = 0; row < nbrows; row++){ */
-    for(unsigned int panel = 0; panel < 1; panel++){
-        panel_qr(panel, nbcols, nbrows, block_size, rv_mat, aux); // nbcols and nbrows are switched because rv_mat has the shape of the transpose of the shadow matrix
-        larft(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat);
-        larfb(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat);
-    }
+    /* for(unsigned int panel = 0; panel < 1; panel++){ */
+    /*     panel_qr(panel, nbcols, nbrows, block_size, rv_mat, aux); // nbcols and nbrows are switched because rv_mat has the shape of the transpose of the shadow matrix */
+    /*     larft(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
+    /*     larfb(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
+    /* } */
 }
 )"; 
 

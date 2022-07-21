@@ -53,9 +53,9 @@ void QRSolver<block_size>::decompose()
     std::vector<double> rvMat(nbrows * nbcols * bs * bs);
     queue->enqueueReadBuffer(d_rvMat, CL_TRUE, 0, nbrows * nbcols * bs * bs * sizeof(double), rvMat.data());
 
-    for(int i = 0; i < nbcols * bs; i++){
+    for(int i = 0; i < nbrows * bs; i++){
         for(int j = 0; j < bs; j++){
-            std::cout << rvMat[i * nbrows * bs + j] << " ";
+            std::cout << rvMat[i * nbcols * bs + j] << " ";
         }
         std::cout << std::endl;
     }

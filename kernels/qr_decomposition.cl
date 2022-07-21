@@ -10,6 +10,7 @@ unsigned int dense_block_ind(const unsigned int nbcols,
 }
 
 __kernel void sp_to_dense(unsigned int nbrows,
+                          unsigned int nbcols,
                           unsigned int block_size,
                           __global const int *ptrs,
                           __global const int *inds,
@@ -29,7 +30,7 @@ __kernel void sp_to_dense(unsigned int nbrows,
     if(lane < num_active_threads){
         while(br < nbrows){
             for(unsigned int ptr = ptrs[br]; ptr < ptrs[br + 1]; ptr++){
-                rv_mat[dense_block_ind(nbrows, bs, inds[ptr], br, r, c)] = vals[ptr * bs * bs + r * bs + c];
+                rv_mat[dense_block_ind(nbcols, bs, br, inds[ptr], r, c)] = vals[ptr * bs * bs + r * bs + c];
             }
 
             br += num_rows_per_warp;
@@ -275,14 +276,13 @@ __kernel void qr_decomposition(unsigned int nbrows,
                                __global double *rv_mat,
                                __local double *aux)
 {
-    __local double t_mat[9];
+    /* __local double t_mat[9]; */
 
-    sp_to_dense(nbrows, block_size, ptrs, inds, vals, rv_mat);
+    sp_to_dense(nbrows, nbcols, block_size, ptrs, inds, vals, rv_mat);
 
-    /* for(unsigned int row = 0; row < nbrows; row++){ */
-    for(unsigned int panel = 0; panel < 1; panel++){
-        panel_qr(panel, nbcols, nbrows, block_size, rv_mat, aux); // nbcols and nbrows are switched because rv_mat has the shape of the transpose of the shadow matrix
-        /* larft(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
-        /* larfb(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
-    }
+    /* for(unsigned int panel = 0; panel < 1; panel++){ */
+    /*     panel_qr(panel, nbcols, nbrows, block_size, rv_mat, aux); // nbcols and nbrows are switched because rv_mat has the shape of the transpose of the shadow matrix */
+    /*     larft(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
+    /*     larfb(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
+    /* } */
 }

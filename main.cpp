@@ -49,6 +49,7 @@ int main(int argc, char** argv){
     QRSolver<3> solver(rowPointers, colIndices, nnzValues);
     solver.setOpencl(context, queue);
     solver.writeDataGPU();
+    solver.decompose();
 
     return 0;
 }
