@@ -15,7 +15,6 @@ QRSolver<block_size>::QRSolver(const std::vector<int> &rowPointers_,
                                const std::vector<double> &nnzValues_):
     rowPointers(rowPointers_), colIndices(colIndices_), nnzValues(nnzValues_)
 {
-    bs = block_size;
     nbrows = rowPointers.size() - 1;
     nbcols = *std::max_element(colIndices.begin(), colIndices.end()) + 1;
 }
@@ -30,6 +29,8 @@ void QRSolver<block_size>::setOpencl(std::shared_ptr<cl::Context>& context_, std
 template <unsigned int block_size>
 void QRSolver<block_size>::writeDataGPU()
 {
+    unsigned int bs = block_size;
+
     std::call_once(ocl_init, [&]() {
         d_rowPointers = cl::Buffer(*context, CL_MEM_READ_WRITE, sizeof(int) * rowPointers.size());
         d_colIndices = cl::Buffer(*context, CL_MEM_READ_WRITE, sizeof(int) * colIndices.size());
@@ -48,6 +49,7 @@ void QRSolver<block_size>::writeDataGPU()
 template <unsigned int block_size>
 void QRSolver<block_size>::decompose()
 {
+    unsigned int bs = block_size;
     OpenclKernels::qr_decomposition(nbrows, nbcols, bs, d_rowPointers, d_colIndices, d_nnzValues, d_rvMat);
 
     std::vector<double> rvMat(nbrows * nbcols * bs * bs);

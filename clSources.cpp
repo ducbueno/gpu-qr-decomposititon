@@ -14,13 +14,13 @@ unsigned int dense_block_ind(const unsigned int nbcols,
     return nbcols * br * bs * bs + (r * nbcols + bc) * bs + c;
 }
 
-__kernel void sp_to_dense(unsigned int nbrows,
-                          unsigned int nbcols,
-                          unsigned int block_size,
-                          __global const int *ptrs,
-                          __global const int *inds,
-                          __global const double *vals,
-                          __global double *rv_mat)
+__kernel void sp2dense(unsigned int nbrows,
+                       unsigned int nbcols,
+                       unsigned int block_size,
+                       __global const int *ptrs,
+                       __global const int *inds,
+                       __global const double *vals,
+                       __global double *rv_mat)
 {
     const unsigned int warpsize = 32;
     const unsigned int idx_t = get_local_id(0);
@@ -43,233 +43,133 @@ __kernel void sp_to_dense(unsigned int nbrows,
     }
 }
 
-__kernel void panel_qr(unsigned int panel,
-                       unsigned int nbrows,
-                       unsigned int nbcols,
-                       unsigned int block_size,
-                       __global double *rv_mat,
-                       __local double *sum)
-{
-    const unsigned int warpsize = 32;
-    const unsigned int idx_t = get_local_id(0);
-    const unsigned int bs = block_size;
-    const unsigned int lane = idx_t % warpsize;
-    double sigma[3], rv_row[3], rho[3];
-
-    for(unsigned int c = 0; c < bs; c++){
-        for(unsigned int _c = c; _c < bs; _c++){
-            sum[lane] = 0.0;
-
-            for(unsigned int r = panel * bs + lane + c + 1; r < nbrows * bs; r += warpsize){
-                sum[lane] += rv_mat[(r * nbcols + panel) * bs + c] * rv_mat[(r * nbcols + panel) * bs + _c];
-
-                for(unsigned int stride = warpsize / 2; stride > 0; stride /= 2){
-                    barrier(CLK_LOCAL_MEM_FENCE);
-
-                    if(lane < stride){
-                        sum[lane] += sum[lane + stride];
-                    }
-                }
-            }
-
-            sigma[_c] = sum[0];
-            rv_row[_c] = rv_mat[dense_block_ind(nbcols, bs, panel, panel, c, _c)];
-        }
-
-        double mu = sqrt(rv_row[c] + sigma[c]);
-        double v0 = (rv_row[c] <= 0) ? rv_row[c] - mu : -sigma[c] / (rv_row[c] + mu);
-        double beta = 2 * v0 * v0 / (sigma[c] + v0 * v0);
-
-        for(unsigned int _c = c; _c < bs; _c++){
-            rho[_c] = beta * (rv_row[_c] + sigma[_c] / v0);
-            rv_mat[dense_block_ind(nbcols, bs, panel, panel, c, _c)] = rv_row[_c] - rho[_c];
-
-            for(unsigned int r = panel * bs + lane + c + 1; r < nbrows * bs; r += warpsize){
-                if(_c == c){
-                    rv_mat[(r * nbcols + panel) * bs + _c] /= v0;
-                }
-                else{
-                    rv_mat[(r * nbcols + panel) * bs + _c] -= rho[_c] * rv_mat[(r * nbcols + panel) * bs + c];
-                }
-            }
-        }
-    }
-}
-
-__kernel void larft(unsigned int panel,
-                    unsigned int nbrows,
-                    unsigned int nbcols,
-                    unsigned int block_size,
-                    __global double *rv_mat,
-                    __local double *sum,
-                    __local double *t_mat)
+__kernel void coldotp(unsigned int nbrows,
+                      unsigned int nbcols,
+                      unsigned int block_size,
+                      unsigned int coll,
+                      unsigned int colr,
+                      unsigned int row_offset,
+                      __global double *mat,
+                      __local double *sum)
 {
     const unsigned int warpsize = 32;
     const unsigned int idx_t = get_local_id(0);
     const unsigned int bs = block_size;
     const unsigned int lane = idx_t % warpsize;
 
-    if(lane < bs * bs){
-        t_mat[lane] = 0.0;
+    sum[lane] = 0.0;
+
+    for(unsigned int r = lane + coll + row_offset; r < nbrows * bs; r += warpsize){
+        sum[lane] += mat[r * nbcols * bs + coll] * mat[r * nbcols * bs + colr];
     }
+    barrier(CLK_LOCAL_MEM_FENCE);
 
-    for(int c = 0; c < bs; c++){
-        for(int _c = c; _c >= 0; _c--){
-            sum[lane] = 0.0;
-
-            for(unsigned int r = panel * bs + lane + c + 1; r < nbrows * bs; r += warpsize){
-                sum[lane] += rv_mat[(r * nbcols + panel) * bs + c] * rv_mat[(r * nbcols + panel) * bs + _c];
-
-                for(unsigned int stride = warpsize / 2; stride > 0; stride /= 2){
-                    if(lane < stride){
-                        sum[lane] += sum[lane + stride];
-                    }
-                    barrier(CLK_LOCAL_MEM_FENCE);
-                }
-            }
-
-            if(lane == 0){
-                t_mat[_c * bs + c] = sum[0];
-                t_mat[_c * bs + c] += (_c == c) ? 1 : rv_mat[(c * nbcols + panel) * bs + _c];
-            }
+    for(unsigned int stride = warpsize / 2; stride > 0; stride /= 2){
+        if(lane < stride){
+            sum[lane] += sum[lane + stride];
         }
-    }
-
-    if(lane < bs * bs && panel == 0){
-        printf("t_mat[%d] = %f\n", lane, t_mat[lane]);
+        barrier(CLK_LOCAL_MEM_FENCE);
     }
 }
 
-__kernel void gemm1(unsigned int nbcols,
-                    unsigned int br,
-                    unsigned int bc,
-                    unsigned int panel,
-                    unsigned int result_ind,
-                    __global double *rv_mat,
-                    __local double *result)
+__kernel void sub_scale_col(unsigned int nbrows,
+                            unsigned int nbcols,
+                            unsigned int block_size,
+                            unsigned int coll,
+                            unsigned int colr,
+                            unsigned int row_offset,
+                            double factor,
+                            __global double *mat)
 {
-    const unsigned int bs = 3;
     const unsigned int warpsize = 32;
     const unsigned int idx_t = get_local_id(0);
+    const unsigned int bs = block_size;
     const unsigned int lane = idx_t % warpsize;
-    const unsigned int r = lane % bs;
-    const unsigned int c = (lane / bs) % bs;
-    double temp = 0.0;
 
-    for(unsigned int k = 0; k < bs; k++){
-        if(br == panel){ // rv_mat[panel, panel] is unit lower triagular
-            if(k == r){
-                temp += rv_mat[dense_block_ind(nbcols, bs, br, bc, r, c)];
-            }
-            else if(k > r){
-                temp += rv_mat[dense_block_ind(nbcols, bs, br, panel, k, r)] * \
-                    rv_mat[dense_block_ind(nbcols, bs, br, bc, k, c)];
-            }
+    for(unsigned int r = lane + colr + row_offset; r < nbrows * bs; r += warpsize){
+        mat[r * nbcols * bs + coll] -= factor * mat[r * nbcols * bs + colr];
+    }
+}
+
+__kernel void scale_col(unsigned int nbrows,
+                        unsigned int nbcols,
+                        unsigned int block_size,
+                        unsigned int col,
+                        unsigned int row_offset,
+                        double factor,
+                        __global double *mat)
+{
+    const unsigned int warpsize = 32;
+    const unsigned int idx_t = get_local_id(0);
+    const unsigned int bs = block_size;
+    const unsigned int lane = idx_t % warpsize;
+
+    for(unsigned int r = lane + col + row_offset; r < nbrows * bs; r += warpsize){
+        mat[r * nbcols * bs + col] /= factor;
+    }
+}
+
+__kernel void tile_house(unsigned int nbrows,
+                         unsigned int nbcols,
+                         unsigned int block_size,
+                         unsigned int tile,
+                         __global double *mat,
+                         __local double *sum,
+                         __local double *T)
+{
+    const unsigned int warpsize = 32;
+    const unsigned int idx_t = get_local_id(0);
+    const unsigned int bs = block_size;
+    const unsigned int lane = idx_t % warpsize;
+
+    double v0, beta, mu;
+
+    for(unsigned int col = tile * bs; col < (tile + 1) * bs; col++){
+        coldotp(nbrows, nbcols, bs, col, col, 1, mat, sum);
+
+        double alpha = mat[col * nbcols * bs + col];
+        double sigma = sum[0];
+
+        if(sigma == 0){
+            v0 = 1.0;
+            beta = alpha >= 0 ? 0.0 : -2.0;
         }
         else{
-            temp += rv_mat[dense_block_ind(nbcols, bs, br, panel, k, r)] * \
-                rv_mat[dense_block_ind(nbcols, bs, br, bc, k, c)];
-        }
-    }
-
-    result[result_ind * bs * bs + r * bs + c] += temp;
-}
-
-__kernel void trmm(unsigned int result_ind,
-                   __local double *result,
-                   __local double *t_mat)
-{
-    const unsigned int bs = 3;
-    const unsigned int warpsize = 32;
-    const unsigned int idx_t = get_local_id(0);
-    const unsigned int lane = idx_t % warpsize;
-    const unsigned int r = lane % bs;
-    const unsigned int c = (lane / bs) % bs;
-    double temp = 0.0;
-
-    for(unsigned int k = 0; k < bs; k++){
-        temp += t_mat[k * bs + r] * result[result_ind * bs * bs + k * bs + c];
-    }
-
-    result[result_ind * bs * bs + r * bs + c] = temp;
-}
-
-__kernel void gemm2(unsigned int nbcols,
-                    unsigned int br,
-                    unsigned int bc,
-                    unsigned int panel,
-                    unsigned int result_ind,
-                    __global double *rv_mat,
-                    __local double *result,
-                    __local double *t_mat)
-{
-    const unsigned int bs = 3;
-    const unsigned int warpsize = 32;
-    const unsigned int idx_t = get_local_id(0);
-    const unsigned int lane = idx_t % warpsize;
-    const unsigned int r = lane % bs;
-    const unsigned int c = (lane / bs) % bs;
-    double temp = 0.0;
-
-    if(br == panel){
-        for(unsigned int k = 0; k < bs; k++){
-            temp += t_mat[k * bs + r] * result[result_ind * bs * bs + k * bs + c];
+            mu = sqrt(alpha * alpha + sigma);
+            v0 = alpha <= 0 ? alpha - mu : -sigma / (alpha + mu);
+            beta = 2 * (v0 * v0) / (sigma + v0 * v0);
         }
 
-        result[result_ind * bs * bs + r * bs + c] = temp;
-        temp = 0.0;
-    }
+        for(unsigned int i = 0; i < bs - col; i++){
+            unsigned int _col = bs - i - 1;
 
-    for(unsigned int k = 0; k < bs; k++){
-        if(br == panel){ // rv_mat[panel, panel] is unit lower triagular
-            if(k == r){
-                temp += result[result_ind * bs * bs + r * bs + c];
-            }
-            else if(k < r){
-                temp += rv_mat[dense_block_ind(nbcols, bs, br, panel, r, k)] * \
-                    result[result_ind * bs * bs + k * bs + c];
+            coldotp(nbrows, nbcols, bs, col, _col, 1, mat, sum);
+            alpha = mat[col * nbcols * bs + _col];
+            double s = alpha + sum[0] / v0;
+            mat[col * nbcols * bs + _col] -= beta * s;
+
+            if(_col > col){
+                sub_scale_col(nbrows, nbcols, bs, _col, col, 1, beta * s / v0, mat);
             }
         }
-        else{
-            temp += rv_mat[dense_block_ind(nbcols, bs, br, panel, r, k)] * \
-                result[result_ind * bs * bs + k * bs + c];
-        }
+
+        scale_col(nbrows, nbcols, bs, col, 1, v0, mat);
     }
 
-    rv_mat[dense_block_ind(nbcols, bs, br, bc, r, c)] -= temp;
-}
+    /* if(lane < bs * bs){ */
+    /*     T[lane] = 0.0; */
+    /* } */
+    /* barrier(CLK_LOCAL_MEM_FENCE); */
 
-__kernel void larfb(unsigned int panel,
-                    unsigned int nbrows,
-                    unsigned int nbcols,
-                    unsigned int block_size,
-                    __global double *rv_mat,
-                    __local double *vta2,
-                    __local double *t_mat)
-{
-    const unsigned int warpsize = 32;
-    const unsigned int idx_t = get_local_id(0);
-    const unsigned int bs = block_size;
-    const unsigned int num_active_threads = (warpsize / bs / bs) * bs * bs;
-    const unsigned int num_cols_per_warp = warpsize / bs / bs;
-    const unsigned int lane = idx_t % warpsize;
-    unsigned int bc = 1 + panel + lane / bs / bs;
+    /* for(unsigned int i = tile * bs; i < (tile + 1) * bs; i++){ */
+    /*     coldotp(nbrows, nbcols, bs, i, i, 1, mat, sum); */
+    /*     T[i * bs + i] = (1 + sum[0]) / 2; */
 
-    if(lane < num_active_threads){
-        while(bc < nbcols){
-            vta2[lane] = 0.0;
-
-            for(unsigned int br = panel; br < nbrows; br++){
-                gemm1(nbcols, br, bc, panel, lane / bs / bs, rv_mat, vta2);
-            }
-
-            for(unsigned int br = panel; br < nbrows; br++){
-                gemm2(nbcols, br, bc, panel, lane / bs / bs, rv_mat, vta2, t_mat);
-            }
-
-            bc += num_cols_per_warp;
-        }
-    }
+    /*     for(unsigned int j = i + 1; j < (tile + 1) * bs; j++){ */
+    /*         coldotp(nbrows, nbcols, bs, i, j, j + 1, mat, sum); */
+    /*         T[i * bs + j] = sum[0]; */
+    /*     } */
+    /* } */
 }
 
 __kernel void qr_decomposition(unsigned int nbrows,
@@ -281,15 +181,15 @@ __kernel void qr_decomposition(unsigned int nbrows,
                                __global double *rv_mat,
                                __local double *aux)
 {
-    /* __local double t_mat[9]; */
+    __local double T[9];
 
-    sp_to_dense(nbrows, nbcols, block_size, ptrs, inds, vals, rv_mat);
+    sp2dense(nbrows, nbcols, block_size, ptrs, inds, vals, rv_mat);
 
-    /* for(unsigned int panel = 0; panel < 1; panel++){ */
-    /*     panel_qr(panel, nbcols, nbrows, block_size, rv_mat, aux); // nbcols and nbrows are switched because rv_mat has the shape of the transpose of the shadow matrix */
-    /*     larft(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
-    /*     larfb(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
-    /* } */
+    for(unsigned int tile = 0; tile < 1; tile++){
+        tile_house(nbrows, nbcols, block_size, tile, rv_mat, aux, T);
+        /* larft(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
+        /* larfb(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
+    }
 }
 )"; 
 
