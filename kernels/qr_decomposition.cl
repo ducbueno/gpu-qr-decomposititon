@@ -1,17 +1,36 @@
+#pragma OPENCL EXTENSION cl_khr_fp64: enable
+#pragma OPENCL EXTENSION cl_khr_int64_base_atomics: enable
+
+void atomic_add(__local double *val, double delta)
+{
+    union{
+        double f;
+        ulong i;
+    } old;
+    union {
+        double f;
+        ulong i;
+    } new;
+
+    do{
+        old.f = *val;
+        new.f = old.f + delta;
+    } while(atom_cmpxchg((volatile __local ulong *)val, old.i, new.i) != old.i);
+}
+
 unsigned int dense_block_ind(const unsigned int nbcols,
-                             const unsigned int block_size,
+                             const unsigned int bs,
                              const unsigned int br,
                              const unsigned int bc,
                              const unsigned int r,
                              const unsigned int c)
 {
-    const unsigned int bs = block_size;
     return nbcols * br * bs * bs + (r * nbcols + bc) * bs + c;
 }
 
-__kernel void sp2dense(unsigned int nbrows,
-                       unsigned int nbcols,
-                       unsigned int block_size,
+__kernel void sp2dense(const unsigned int nbrows,
+                       const unsigned int nbcols,
+                       const unsigned int bs,
                        __global const int *ptrs,
                        __global const int *inds,
                        __global const double *vals,
@@ -19,7 +38,6 @@ __kernel void sp2dense(unsigned int nbrows,
 {
     const unsigned int warpsize = 32;
     const unsigned int idx_t = get_local_id(0);
-    const unsigned int bs = block_size;
     const unsigned int num_active_threads = (warpsize / bs / bs) * bs * bs;
     const unsigned int num_rows_per_warp = warpsize / bs / bs;
     const unsigned int lane = idx_t % warpsize;
@@ -38,18 +56,17 @@ __kernel void sp2dense(unsigned int nbrows,
     }
 }
 
-__kernel void coldotp(unsigned int nbrows,
-                      unsigned int nbcols,
-                      unsigned int block_size,
-                      unsigned int coll,
-                      unsigned int colr,
-                      unsigned int row_offset,
-                      __global double *mat,
+__kernel void coldotp(const unsigned int nbrows,
+                      const unsigned int nbcols,
+                      const unsigned int bs,
+                      const unsigned int coll,
+                      const unsigned int colr,
+                      const unsigned int row_offset,
+                      __global const double *mat,
                       __local double *sum)
 {
     const unsigned int warpsize = 32;
     const unsigned int idx_t = get_local_id(0);
-    const unsigned int bs = block_size;
     const unsigned int lane = idx_t % warpsize;
 
     sum[lane] = 0.0;
@@ -67,18 +84,17 @@ __kernel void coldotp(unsigned int nbrows,
     }
 }
 
-__kernel void sub_scale_col(unsigned int nbrows,
-                            unsigned int nbcols,
-                            unsigned int block_size,
-                            unsigned int coll,
-                            unsigned int colr,
-                            unsigned int row_offset,
-                            double factor,
+__kernel void sub_scale_col(const unsigned int nbrows,
+                            const unsigned int nbcols,
+                            const unsigned int bs,
+                            const unsigned int coll,
+                            const unsigned int colr,
+                            const unsigned int row_offset,
+                            const double factor,
                             __global double *mat)
 {
     const unsigned int warpsize = 32;
     const unsigned int idx_t = get_local_id(0);
-    const unsigned int bs = block_size;
     const unsigned int lane = idx_t % warpsize;
 
     for(unsigned int r = lane + colr + row_offset; r < nbrows * bs; r += warpsize){
@@ -86,17 +102,16 @@ __kernel void sub_scale_col(unsigned int nbrows,
     }
 }
 
-__kernel void scale_col(unsigned int nbrows,
-                        unsigned int nbcols,
-                        unsigned int block_size,
-                        unsigned int col,
-                        unsigned int row_offset,
-                        double factor,
+__kernel void scale_col(const unsigned int nbrows,
+                        const unsigned int nbcols,
+                        const unsigned int bs,
+                        const unsigned int col,
+                        const unsigned int row_offset,
+                        const double factor,
                         __global double *mat)
 {
     const unsigned int warpsize = 32;
     const unsigned int idx_t = get_local_id(0);
-    const unsigned int bs = block_size;
     const unsigned int lane = idx_t % warpsize;
 
     for(unsigned int r = lane + col + row_offset; r < nbrows * bs; r += warpsize){
@@ -104,17 +119,16 @@ __kernel void scale_col(unsigned int nbrows,
     }
 }
 
-__kernel void tile_house(unsigned int nbrows,
-                         unsigned int nbcols,
-                         unsigned int block_size,
-                         unsigned int tile,
+__kernel void tile_house(const unsigned int nbrows,
+                         const unsigned int nbcols,
+                         const unsigned int bs,
+                         const unsigned int tile,
                          __global double *mat,
                          __local double *sum,
                          __local double *T)
 {
     const unsigned int warpsize = 32;
     const unsigned int idx_t = get_local_id(0);
-    const unsigned int bs = block_size;
     const unsigned int lane = idx_t % warpsize;
 
     double v0, beta, mu;
@@ -151,25 +165,126 @@ __kernel void tile_house(unsigned int nbrows,
         scale_col(nbrows, nbcols, bs, col, 1, v0, mat);
     }
 
-    /* if(lane < bs * bs){ */
-    /*     T[lane] = 0.0; */
-    /* } */
-    /* barrier(CLK_LOCAL_MEM_FENCE); */
+    if(lane < bs * bs){
+        T[lane] = 0.0;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
 
-    /* for(unsigned int i = tile * bs; i < (tile + 1) * bs; i++){ */
-    /*     coldotp(nbrows, nbcols, bs, i, i, 1, mat, sum); */
-    /*     T[i * bs + i] = (1 + sum[0]) / 2; */
+    for(unsigned int i = 0; i < bs; i++){
+        coldotp(nbrows, nbcols, bs, tile * bs + i, tile * bs + i, 1, mat, sum);
+        T[i * bs + i] = (1 + sum[0]) / 2;
 
-    /*     for(unsigned int j = i + 1; j < (tile + 1) * bs; j++){ */
-    /*         coldotp(nbrows, nbcols, bs, i, j, j + 1, mat, sum); */
-    /*         T[i * bs + j] = sum[0]; */
-    /*     } */
-    /* } */
+        for(unsigned int j = i + 1; j < bs; j++){
+            coldotp(nbrows, nbcols, bs, tile * bs + i, tile * bs + j, j + 1, mat, sum);
+            T[i * bs + j] = mat[(tile * bs + j) * nbcols * bs + (tile * bs + i)] + sum[0];
+        }
+    }
 }
 
-__kernel void qr_decomposition(unsigned int nbrows,
-                               unsigned int nbcols,
-                               unsigned int block_size,
+__kernel void block_coldotp_transp(const unsigned int nbrows,
+                                   const unsigned int nbcols,
+                                   const unsigned int bs,
+                                   const unsigned int bc,
+                                   const unsigned int tile,
+                                   __global const double *mat,
+                                   __local double *W)
+{
+    const unsigned int warpsize = 32;
+    const unsigned int idx_t = get_local_id(0);
+    const unsigned int num_active_threads = (warpsize / bs / bs) * bs * bs;
+    const unsigned int num_cols_per_warp = warpsize / bs / bs;
+    const unsigned int num_rows_per_warp = warpsize / bs / bs;
+    const unsigned int lane = idx_t % warpsize;
+    const unsigned int i = (lane / bs) % bs;
+    const unsigned int j = lane % bs;
+
+    W[lane] = 0.0;
+
+    for(unsigned int _bc = 0; _bc < num_cols_per_warp && bc + _bc < nbcols; _bc++){
+        if(lane < num_active_threads){
+            for(unsigned int br = tile + lane / bs / bs; br < nbrows; br += num_rows_per_warp){
+                double temp = 0.0;
+
+                for(unsigned int k = 0; k < bs; k++){
+                    if(br == tile){
+                        if(k == 0){
+                            temp += mat[dense_block_ind(nbcols, bs, br, bc + _bc, i, j)];
+                        }
+                        else if(k > i){
+                            temp += mat[dense_block_ind(nbcols, bs, br, tile, k, i)] * \
+                                mat[dense_block_ind(nbcols, bs, br, bc + _bc, k, j)];
+                        }
+                    }
+                    else{
+                        temp += mat[dense_block_ind(nbcols, bs, br, tile, k, i)] * \
+                            mat[dense_block_ind(nbcols, bs, br, bc + _bc, k, j)];
+                    }
+                }
+
+                atomic_add(W + _bc * bs * bs + i * bs + j, temp);
+            }
+        }
+
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        /* if(lane == 0 && bc + _bc < nbcols){ */
+        /*     for(unsigned int ii = 0; ii < bs; ii++){ */
+        /*         for(unsigned int jj = 0; jj < bs; jj++){ */
+        /*             printf("%.8e ", W[_bc * bs * bs + jj * bs + ii]); */
+        /*         } */
+        /*         printf(" %d\n", bc + _bc - 1); */
+        /*     } */
+        /* } */
+    }
+}
+
+__kernel void block_col_trsolve(const unsigned int nbrows,
+                                const unsigned int nbcols,
+                                const unsigned int bs,
+                                __local const double *T,
+                                __local double *W)
+{
+    const unsigned int warpsize = 32;
+    const unsigned int idx_t = get_local_id(0);
+    const unsigned int num_active_threads = (warpsize / bs / bs) * bs * bs;
+    const unsigned int lane = idx_t % warpsize;
+    const unsigned int i = (lane / bs) % bs;
+    const unsigned int j = lane % bs;
+
+    if(lane < num_active_threads){
+        unsigned int blk = lane / bs / bs;
+
+        W[blk * bs * bs + i * bs + j] /= T[i * bs + i];
+
+        for(unsigned int k = 1; k < bs; k++){
+            if(i < bs - k){
+                W[blk * bs * bs + i * bs + j] -= T[i * bs + (bs - k)] * W[blk * bs * bs + (bs - k) * bs + j] / T[i * bs + i];
+            }
+        }
+    }
+}
+
+__kernel void update_tr(const unsigned int nbrows,
+                        const unsigned int nbcols,
+                        const unsigned int bs,
+                        const unsigned int tile,
+                        __global const double *mat,
+                        __local const double *T,
+                        __local double *W)
+{
+    const unsigned int warpsize = 32;
+    const unsigned int num_cols_per_warp = warpsize / bs / bs;
+
+    for(unsigned int bc = tile + 1; bc < nbcols; bc += num_cols_per_warp){
+        block_coldotp_transp(nbrows, nbcols, bs, bc, tile, mat, W);
+        block_col_trsolve(nbrows, nbcols, bs, T, W);
+        /* block_col_mult_sub(); */
+    }
+}
+
+__kernel void qr_decomposition(const unsigned int nbrows,
+                               const unsigned int nbcols,
+                               const unsigned int bs,
                                __global const int *ptrs,
                                __global const int *inds,
                                __global const double *vals,
@@ -178,11 +293,10 @@ __kernel void qr_decomposition(unsigned int nbrows,
 {
     __local double T[9];
 
-    sp2dense(nbrows, nbcols, block_size, ptrs, inds, vals, rv_mat);
+    sp2dense(nbrows, nbcols, bs, ptrs, inds, vals, rv_mat);
 
     for(unsigned int tile = 0; tile < 1; tile++){
-        tile_house(nbrows, nbcols, block_size, tile, rv_mat, aux, T);
-        /* larft(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
-        /* larfb(panel, nbcols, nbrows, block_size, rv_mat, aux, t_mat); */
+        tile_house(nbrows, nbcols, bs, tile, rv_mat, aux, T);
+        update_tr(nbrows, nbcols, bs, tile, rv_mat, T, aux);
     }
 }
