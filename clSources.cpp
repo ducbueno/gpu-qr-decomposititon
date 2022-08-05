@@ -232,12 +232,41 @@ __kernel void block_coldotp_transp(const unsigned int nbrows,
 
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        if(lane == 0 && bc + _bc < nbcols){
+    }
+}
+
+__kernel void block_col_trsolve(const unsigned int nbrows,
+                                const unsigned int nbcols,
+                                const unsigned int bs,
+                                __local const double *T,
+                                __local double *W)
+{
+    const unsigned int warpsize = 32;
+    const unsigned int idx_t = get_local_id(0);
+    const unsigned int num_active_threads = (warpsize / bs / bs) * bs * bs;
+    const unsigned int lane = idx_t % warpsize;
+    const unsigned int i = (lane / bs) % bs;
+    const unsigned int j = lane % bs;
+
+    if(lane < num_active_threads){
+        unsigned int blk = lane / bs / bs;
+
+        W[blk * bs * bs + i * bs + j] /= T[i * bs + i];
+
+        for(unsigned int k = 0; k < bs - 1; k++){
+            if(i > k){
+                W[blk * bs * bs + i * bs + j] -= T[i * bs + k] * W[blk * bs * bs + k * bs + j] / T[i * bs + i];
+            }
+        }
+    }
+
+    if(lane == 0){
+        for(unsigned int blk = 0; blk < 3; blk++){
             for(unsigned int ii = 0; ii < bs; ii++){
                 for(unsigned int jj = 0; jj < bs; jj++){
-                    printf("%.8e ", W[_bc * bs * bs + jj * bs + ii]);
+                    printf("%.8e ", W[blk * bs * bs + jj * bs + ii]);
                 }
-                printf(" %d\n", bc + _bc - 1);
+                printf(" %d\n", blk);
             }
         }
     }
@@ -253,10 +282,14 @@ __kernel void update_tr(const unsigned int nbrows,
 {
     const unsigned int warpsize = 32;
     const unsigned int num_cols_per_warp = warpsize / bs / bs;
+    const unsigned int idx_t = get_local_id(0);
 
     for(unsigned int bc = tile + 1; bc < nbcols; bc += num_cols_per_warp){
         block_coldotp_transp(nbrows, nbcols, bs, bc, tile, mat, W);
-        /* block_mult(); */
+        if(idx_t == 0){
+            printf("bc - 1 = %d\n", bc - 1);
+        }
+        block_col_trsolve(nbrows, nbcols, bs, T, W);
         /* block_col_mult_sub(); */
     }
 }
