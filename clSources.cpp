@@ -231,7 +231,6 @@ __kernel void block_coldotp_transp(const unsigned int nbrows,
         }
 
         barrier(CLK_LOCAL_MEM_FENCE);
-
     }
 }
 
@@ -255,18 +254,51 @@ __kernel void block_col_trsolve(const unsigned int nbrows,
 
         for(unsigned int k = 0; k < bs - 1; k++){
             if(i > k){
-                W[blk * bs * bs + i * bs + j] -= T[i * bs + k] * W[blk * bs * bs + k * bs + j] / T[i * bs + i];
+                W[blk * bs * bs + i * bs + j] -= T[k * bs + i] * W[blk * bs * bs + k * bs + j] / T[i * bs + i];
             }
         }
     }
+}
 
-    if(lane == 0){
-        for(unsigned int blk = 0; blk < 3; blk++){
-            for(unsigned int ii = 0; ii < bs; ii++){
-                for(unsigned int jj = 0; jj < bs; jj++){
-                    printf("%.8e ", W[blk * bs * bs + jj * bs + ii]);
+__kernel void block_col_mult_sub(const unsigned int nbrows,
+                                 const unsigned int nbcols,
+                                 const unsigned int bs,
+                                 const unsigned int bc,
+                                 const unsigned int tile,
+                                 __global double *mat,
+                                 __local const double *W)
+{
+    const unsigned int warpsize = 32;
+    const unsigned int idx_t = get_local_id(0);
+    const unsigned int num_active_threads = (warpsize / bs / bs) * bs * bs;
+    const unsigned int num_cols_per_warp = warpsize / bs / bs;
+    const unsigned int num_rows_per_warp = warpsize / bs / bs;
+    const unsigned int lane = idx_t % warpsize;
+    const unsigned int i = (lane / bs) % bs;
+    const unsigned int j = lane % bs;
+
+    for(unsigned int _bc = 0; _bc < num_cols_per_warp && bc + _bc < nbcols; _bc++){
+        if(lane < num_active_threads){
+            for(unsigned int br = tile + lane / bs / bs; br < nbrows; br += num_rows_per_warp){
+                double temp = 0.0;
+
+                for(unsigned int k = 0; k < bs; k++){
+                    if(br == tile){
+                        if(k == 0){
+                            temp += W[_bc * bs * bs + i * bs + j];
+                        }
+                        else if(k < i){
+                            temp += mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * \
+                                W[_bc * bs * bs + k * bs + j];
+                        }
+                    }
+                    else{
+                        temp += mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * \
+                            W[_bc * bs * bs + k * bs + j];
+                    }
                 }
-                printf(" %d\n", blk);
+
+                mat[dense_block_ind(nbcols, bs, br, bc + _bc, i, j)] -= temp;
             }
         }
     }
@@ -276,7 +308,7 @@ __kernel void update_tr(const unsigned int nbrows,
                         const unsigned int nbcols,
                         const unsigned int bs,
                         const unsigned int tile,
-                        __global const double *mat,
+                        __global double *mat,
                         __local const double *T,
                         __local double *W)
 {
@@ -286,11 +318,8 @@ __kernel void update_tr(const unsigned int nbrows,
 
     for(unsigned int bc = tile + 1; bc < nbcols; bc += num_cols_per_warp){
         block_coldotp_transp(nbrows, nbcols, bs, bc, tile, mat, W);
-        if(idx_t == 0){
-            printf("bc - 1 = %d\n", bc - 1);
-        }
         block_col_trsolve(nbrows, nbcols, bs, T, W);
-        /* block_col_mult_sub(); */
+        block_col_mult_sub(nbrows, nbcols, bs, bc, tile, mat, W);
     }
 }
 
