@@ -50,7 +50,9 @@ template <unsigned int block_size>
 void QRSolver<block_size>::decompose()
 {
     unsigned int bs = block_size;
-    OpenclKernels::qr_decomposition(nbrows, nbcols, bs, d_rowPointers, d_colIndices, d_nnzValues, d_rvMat);
+    for(int tile = 0; tile < nbcols; tile++){
+        OpenclKernels::qr_decomposition(nbrows, nbcols, tile, bs, d_rowPointers, d_colIndices, d_nnzValues, d_rvMat);
+    }
 
     std::vector<double> rvMat(nbrows * nbcols * bs * bs);
     queue->enqueueReadBuffer(d_rvMat, CL_TRUE, 0, nbrows * nbcols * bs * bs * sizeof(double), rvMat.data());

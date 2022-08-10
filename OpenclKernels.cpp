@@ -35,7 +35,7 @@ void OpenclKernels::init(cl::Context *context, cl::CommandQueue *queue_, std::ve
     initialized = true;
 }
 
-void OpenclKernels::qr_decomposition(int nbrows, int nbcols, int block_size, cl::Buffer& sh_ptrs, cl::Buffer& sh_inds, cl::Buffer& sh_vals, cl::Buffer& rv_mat)
+void OpenclKernels::qr_decomposition(int nbrows, int nbcols, int tile, int block_size, cl::Buffer& sh_ptrs, cl::Buffer& sh_inds, cl::Buffer& sh_vals, cl::Buffer& rv_mat)
 {
     const unsigned int work_group_size = 32;
     // const unsigned int num_work_groups = ceilDivision(Nb, work_group_size);
@@ -47,7 +47,7 @@ void OpenclKernels::qr_decomposition(int nbrows, int nbcols, int block_size, cl:
 
     auto start = std::chrono::high_resolution_clock::now();
     event = (*qr_decomposition_k)(cl::EnqueueArgs(*queue, cl::NDRange(total_work_items), cl::NDRange(work_group_size)),
-                                  nbrows, nbcols, block_size, sh_ptrs, sh_inds, sh_vals, rv_mat, cl::Local(lmem_per_work_group));
+                                  nbrows, nbcols, tile, block_size, sh_ptrs, sh_inds, sh_vals, rv_mat, cl::Local(lmem_per_work_group));
     auto end = std::chrono::high_resolution_clock::now();
 
     if(verbosity > 0){

@@ -319,6 +319,7 @@ __kernel void update_tr(const unsigned int nbrows,
 
 __kernel void qr_decomposition(const unsigned int nbrows,
                                const unsigned int nbcols,
+                               const unsigned int tile,
                                const unsigned int bs,
                                __global const int *ptrs,
                                __global const int *inds,
@@ -326,12 +327,11 @@ __kernel void qr_decomposition(const unsigned int nbrows,
                                __global double *rv_mat,
                                __local double *aux)
 {
-    __local double T[9];
-
-    sp2dense(nbrows, nbcols, bs, ptrs, inds, vals, rv_mat);
-
-    for(unsigned int tile = 0; tile < nbcols; tile++){
-        tile_house(nbrows, nbcols, bs, tile, rv_mat, aux, T);
-        update_tr(nbrows, nbcols, bs, tile, rv_mat, T, aux);
+    if(tile == 0){
+        sp2dense(nbrows, nbcols, bs, ptrs, inds, vals, rv_mat);
     }
+
+    __local double T[9];
+    tile_house(nbrows, nbcols, bs, tile, rv_mat, aux, T);
+    update_tr(nbrows, nbcols, bs, tile, rv_mat, T, aux);
 }
