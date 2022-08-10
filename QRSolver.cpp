@@ -52,15 +52,20 @@ void QRSolver<block_size>::decompose()
     unsigned int bs = block_size;
     OpenclKernels::qr_decomposition(nbrows, nbcols, bs, d_rowPointers, d_colIndices, d_nnzValues, d_rvMat);
 
-    // std::vector<double> rvMat(nbrows * nbcols * bs * bs);
-    // queue->enqueueReadBuffer(d_rvMat, CL_TRUE, 0, nbrows * nbcols * bs * bs * sizeof(double), rvMat.data());
+    std::vector<double> rvMat(nbrows * nbcols * bs * bs);
+    queue->enqueueReadBuffer(d_rvMat, CL_TRUE, 0, nbrows * nbcols * bs * bs * sizeof(double), rvMat.data());
 
-    // for(int i = 0; i < nbrows * bs; i++){
-    //     for(int j = 0; j < nbcols * bs; j++){
-    //         std::cout << rvMat[i * nbcols * bs + j] << " ";
-    //     }
-    //     std::cout << std::endl;
-    // }
+    std::ofstream file;
+    file.open("../../data/rvMat.txt");
+
+    for(int i = 0; i < nbrows * bs; i++){
+        for(int j = 0; j < nbcols * bs; j++){
+            file << rvMat[i * nbcols * bs + j] << " ";
+        }
+        file << std::endl;
+    }
+
+    file.close();
 }
 
 template <unsigned int block_size>
