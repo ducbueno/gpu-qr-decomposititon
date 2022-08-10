@@ -154,8 +154,8 @@ __kernel void tile_house(const unsigned int nbrows,
             beta = 2 * (v0 * v0) / (sigma + v0 * v0);
         }
 
-        for(unsigned int i = 0; i < bs - col; i++){
-            unsigned int _col = bs - i - 1;
+        for(unsigned int i = 0; i < bs - (col - tile * bs); i++){
+            unsigned int _col = (tile + 1) * bs - i - 1;
 
             coldotp(nbrows, nbcols, bs, col, _col, 1, mat, sum);
             alpha = mat[col * nbcols * bs + _col];
@@ -314,7 +314,6 @@ __kernel void update_tr(const unsigned int nbrows,
 {
     const unsigned int warpsize = 32;
     const unsigned int num_cols_per_warp = warpsize / bs / bs;
-    const unsigned int idx_t = get_local_id(0);
 
     for(unsigned int bc = tile + 1; bc < nbcols; bc += num_cols_per_warp){
         block_coldotp_transp(nbrows, nbcols, bs, bc, tile, mat, W);
@@ -336,7 +335,7 @@ __kernel void qr_decomposition(const unsigned int nbrows,
 
     sp2dense(nbrows, nbcols, bs, ptrs, inds, vals, rv_mat);
 
-    for(unsigned int tile = 0; tile < 1; tile++){
+    for(unsigned int tile = 0; tile < nbcols; tile++){
         tile_house(nbrows, nbcols, bs, tile, rv_mat, aux, T);
         update_tr(nbrows, nbcols, bs, tile, rv_mat, T, aux);
     }
