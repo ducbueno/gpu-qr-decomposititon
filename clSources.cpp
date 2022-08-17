@@ -61,6 +61,17 @@ __kernel void sp2dense(const unsigned int nbrows,
     }
 }
 
+__kernel void set_qx0(const unsigned int bs,
+                      const unsigned int eye_idx,
+                      __global double *qx0)
+{
+    const unsigned int idx_t = get_local_id(0);
+
+    if(idx_t < bs){
+        qx0[eye_idx * bs * bs + idx_t * bs + idx_t] = 1.0;
+    }
+}
+
 __kernel void coldotp(const unsigned int nbrows,
                       const unsigned int nbcols,
                       const unsigned int bs,
@@ -234,6 +245,49 @@ __kernel void block_coldotp_transp(const unsigned int nbrows,
     }
 }
 
+__kernel void block_coldotp_transp_qx(const unsigned int nbrows,
+                                      const unsigned int nbcols,
+                                      const unsigned int bs,
+                                      const unsigned int tile,
+                                      __global const double *mat,
+                                      __global const double *qx,
+                                      __local double *W)
+{
+    const unsigned int warpsize = 32;
+    const unsigned int idx_t = get_local_id(0);
+    const unsigned int num_active_threads = (warpsize / bs / bs) * bs * bs;
+    const unsigned int num_rows_per_warp = warpsize / bs / bs;
+    const unsigned int lane = idx_t % warpsize;
+    const unsigned int i = (lane / bs) % bs;
+    const unsigned int j = lane % bs;
+
+    W[lane] = 0.0;
+
+    if(lane < num_active_threads){
+        for(unsigned int br = tile + lane / bs / bs; br < nbrows; br += num_rows_per_warp){
+            double temp = 0.0;
+
+            for(unsigned int k = 0; k < bs; k++){
+                if(br == tile){
+                    if(k == 0){
+                        temp += qx[br * bs * bs + i * bs + j];
+                    }
+                    else if(k > i){
+                        temp += mat[dense_block_ind(nbcols, bs, br, tile, k, i)] * \
+                            qx[br * bs * bs + k * bs + j];
+                    }
+                }
+                else{
+                    temp += mat[dense_block_ind(nbcols, bs, br, tile, k, i)] * \
+                        qx[br * bs * bs + k * bs + j];
+                }
+            }
+
+            atomic_add(W + i * bs + j, temp);
+        }
+    }
+}
+
 __kernel void block_col_trsolve(const unsigned int nbrows,
                                 const unsigned int nbcols,
                                 const unsigned int bs,
@@ -304,6 +358,45 @@ __kernel void block_col_mult_sub(const unsigned int nbrows,
     }
 }
 
+__kernel void block_col_mult_sub_qx(const unsigned int nbrows,
+                                    const unsigned int nbcols,
+                                    const unsigned int bs,
+                                    const unsigned int tile,
+                                    __global const double *mat,
+                                    __global double *qx,
+                                    __local const double *W)
+{
+    const unsigned int warpsize = 32;
+    const unsigned int idx_t = get_local_id(0);
+    const unsigned int num_active_threads = (warpsize / bs / bs) * bs * bs;
+    const unsigned int num_rows_per_warp = warpsize / bs / bs;
+    const unsigned int lane = idx_t % warpsize;
+    const unsigned int i = (lane / bs) % bs;
+    const unsigned int j = lane % bs;
+
+    if(lane < num_active_threads){
+        for(unsigned int br = tile + lane / bs / bs; br < nbrows; br += num_rows_per_warp){
+            double temp = 0.0;
+
+            for(unsigned int k = 0; k < bs; k++){
+                if(br == tile){
+                    if(k == 0){
+                        temp += W[i * bs + j];
+                    }
+                    else if(k < i){
+                        temp += mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * W[k * bs + j];
+                    }
+                }
+                else{
+                    temp += mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * W[k * bs + j];
+                }
+            }
+
+            qx[br * bs * bs + i * bs + j] -= temp;
+        }
+    }
+}
+
 __kernel void update_tr(const unsigned int nbrows,
                         const unsigned int nbcols,
                         const unsigned int bs,
@@ -322,28 +415,42 @@ __kernel void update_tr(const unsigned int nbrows,
     }
 }
 
+__kernel void update_qx(const unsigned int nbrows,
+                        const unsigned int nbcols,
+                        const unsigned int bs,
+                        const unsigned int tile,
+                        __global const double *mat,
+                        __global double *qx,
+                        __local const double *T,
+                        __local double *W)
+{
+    unsigned int lane = get_local_id(0);
+    block_coldotp_transp_qx(nbrows, nbcols, bs, tile, mat, qx, W);
+    block_col_trsolve(nbrows, nbcols, bs, T, W);
+    block_col_mult_sub_qx(nbrows, nbcols, bs, tile, mat, qx, W);
+}
+
 __kernel void qr_decomposition(const unsigned int nbrows,
                                const unsigned int nbcols,
                                const unsigned int tile,
                                const unsigned int bs,
+                               const unsigned int eye_idx,
                                __global const int *ptrs,
                                __global const int *inds,
                                __global const double *vals,
-                               __global double *rv_mat,
+                               __global double *mat,
+                               __global double *qx,
                                __local double *aux)
 {
     if(tile == 0){
-        sp2dense(nbrows, nbcols, bs, ptrs, inds, vals, rv_mat);
+        sp2dense(nbrows, nbcols, bs, ptrs, inds, vals, mat);
+        set_qx0(bs, eye_idx, qx);
     }
 
     __local double T[9];
-    tile_house(nbrows, nbcols, bs, tile, rv_mat, aux, T);
-    update_tr(nbrows, nbcols, bs, tile, rv_mat, T, aux);
-
-    const unsigned int idx_t = get_local_id(0);
-    if(idx_t == 0){
-        printf("%.8e\n", rv_mat[dense_block_ind(nbcols, bs, 0, 7, 0, 1)]);
-    }
+    tile_house(nbrows, nbcols, bs, tile, mat, aux, T);
+    update_tr(nbrows, nbcols, bs, tile, mat, T, aux);
+    update_qx(nbrows, nbcols, bs, tile, mat, qx, T, aux);
 }
 )"; 
 

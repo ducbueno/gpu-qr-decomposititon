@@ -6,7 +6,8 @@
 #include <memory>
 #include "opencl.hpp"
 
-using qr_decomposition_kernel_type = cl::KernelFunctor<const int, const int, const int, const int, cl::Buffer&, cl::Buffer&, cl::Buffer&, cl::Buffer&, cl::LocalSpaceArg>;
+using qr_decomposition_kernel_type = cl::KernelFunctor<const int, const int, const int, const int, const int,
+                                                       cl::Buffer&, cl::Buffer&, cl::Buffer&, cl::Buffer&, cl::Buffer&, cl::LocalSpaceArg>;
 
 class OpenclKernels
 {
@@ -23,7 +24,8 @@ public:
     static const std::string qr_decomposition_str;
 
     static void init(cl::Context *context, cl::CommandQueue *queue, std::vector<cl::Device>& devices);
-    static void qr_decomposition(int nbrows, int nbcols, int tile, int block_size, cl::Buffer& sh_ptrs, cl::Buffer& sh_inds, cl::Buffer& sh_vals, cl::Buffer& rv_mat);
+    static void qr_decomposition(int nbrows, int nbcols, int tile, int block_size, int eye_idx,
+                                 cl::Buffer& sh_ptrs, cl::Buffer& sh_inds, cl::Buffer& sh_vals, cl::Buffer& rv_mat, cl::Buffer& x);
 };
 
 #endif

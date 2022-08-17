@@ -22,7 +22,7 @@ private:
     std::shared_ptr<cl::Context> context;
     std::shared_ptr<cl::CommandQueue> queue;
     cl::Buffer d_rowPointers, d_colIndices;
-    cl::Buffer d_nnzValues, d_rvMat;
+    cl::Buffer d_nnzValues, d_rvMat, d_b, d_x;
 
 public:
     QRSolver(const std::vector<int> &rowPointers_,
