@@ -329,25 +329,21 @@ __kernel void block_col_mult_sub(const unsigned int nbrows,
     for(unsigned int _bc = 0; _bc < num_cols_per_warp && bc + _bc < nbcols; _bc++){
         if(lane < num_active_threads){
             for(unsigned int br = tile + lane / bs / bs; br < nbrows; br += num_rows_per_warp){
-                double temp = 0.0;
-
                 for(unsigned int k = 0; k < bs; k++){
                     if(br == tile){
                         if(k == 0){
-                            temp += W[_bc * bs * bs + i * bs + j];
+                            mat[dense_block_ind(nbcols, bs, br, bc + _bc, i, j)] -= W[_bc * bs * bs + i * bs + j];
                         }
                         else if(k < i){
-                            temp += mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * \
+                            mat[dense_block_ind(nbcols, bs, br, bc + _bc, i, j)] -= mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * \
                                 W[_bc * bs * bs + k * bs + j];
                         }
                     }
                     else{
-                        temp += mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * \
+                        mat[dense_block_ind(nbcols, bs, br, bc + _bc, i, j)] -= mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * \
                             W[_bc * bs * bs + k * bs + j];
                     }
                 }
-
-                mat[dense_block_ind(nbcols, bs, br, bc + _bc, i, j)] -= temp;
             }
         }
     }
@@ -371,23 +367,19 @@ __kernel void block_col_mult_sub_qx(const unsigned int nbrows,
 
     if(lane < num_active_threads){
         for(unsigned int br = tile + lane / bs / bs; br < nbrows; br += num_rows_per_warp){
-            double temp = 0.0;
-
             for(unsigned int k = 0; k < bs; k++){
                 if(br == tile){
                     if(k == 0){
-                        temp += W[i * bs + j];
+                        qx[br * bs * bs + i * bs + j] -= W[i * bs + j];
                     }
                     else if(k < i){
-                        temp += mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * W[k * bs + j];
+                        qx[br * bs * bs + i * bs + j] -= mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * W[k * bs + j];
                     }
                 }
                 else{
-                    temp += mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * W[k * bs + j];
+                    qx[br * bs * bs + i * bs + j] -= mat[dense_block_ind(nbcols, bs, br, tile, i, k)] * W[k * bs + j];
                 }
             }
-
-            qx[br * bs * bs + i * bs + j] -= temp;
         }
     }
 }

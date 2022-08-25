@@ -74,21 +74,45 @@ void QRSolver<block_size>::decompose()
 
     // file.close();
 
-    std::vector<double> x(nbcols * bs * bs);
-    queue->enqueueReadBuffer(d_b, CL_TRUE, 0, nbcols * bs * bs * sizeof(double), x.data());
+    std::vector<double> b(nbrows * bs * bs);
+    queue->enqueueReadBuffer(d_b, CL_TRUE, 0, nbrows * bs * bs * sizeof(double), b.data());
 
-    for(int i = 0; i < nbcols * bs; i++){
+    std::ofstream file;
+    file.open("../../data/ocl_b.txt");
+
+    for(int i = 0; i < nbrows * bs; i++){
         for(int j = 0; j < bs; j++){
-            std::cout << x[i * bs + j] << " ";
+            file << b[i * bs + j] << " ";
         }
-        std::cout << std::endl;
+        file << std::endl;
     }
+
+    file.close();
 }
 
 template <unsigned int block_size>
 void QRSolver<block_size>::solve()
 {
+    unsigned int bs = block_size;
+
     queue->enqueueCopyBuffer(d_b, d_x, 0, 0, sizeof(double) * nbcols * bs * bs);
+
+    OpenclKernels::solve(nbcols, bs, d_rvMat, d_b, d_x);
+
+    std::vector<double> x(nbcols * bs * bs);
+    queue->enqueueReadBuffer(d_x, CL_TRUE, 0, nbcols * bs * bs * sizeof(double), x.data());
+
+    std::ofstream file;
+    file.open("../../data/ocl_x.txt");
+
+    for(int i = 0; i < nbcols * bs; i++){
+        for(int j = 0; j < bs; j++){
+            file << x[i * bs + j] << " ";
+        }
+        file << std::endl;
+    }
+
+    file.close();
 }
 
 template class QRSolver<3>;

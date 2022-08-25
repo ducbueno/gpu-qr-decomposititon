@@ -50,6 +50,7 @@ int main(int argc, char** argv){
     solver.setOpencl(context, queue);
     solver.writeDataGPU();
     solver.decompose();
+    solver.solve();
 
     return 0;
 }
